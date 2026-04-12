@@ -11,7 +11,12 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 app = FastAPI()
 
-# ✅ CORS FIX
+
+@app.get("/")
+def home():
+    return {"message": "Backend running ✅"}
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
 
 class QuestionRequest(BaseModel):
     role: str
@@ -32,20 +36,63 @@ class EvaluateRequest(BaseModel):
     answers: list[str]
 
 
-# 🔥 Generate Questions
+def fallback_role_questions(role: str) -> str:
+    role_lower = role.lower()
+
+    if "python" in role_lower:
+        return (
+            "1. What is the difference between a list and a tuple in Python?\n"
+            "2. What are decorators in Python?\n"
+            "3. How does exception handling work in Python?\n"
+            "4. What is the difference between deep copy and shallow copy in Python?\n"
+            "5. Explain OOP concepts in Python with an example."
+        )
+
+    if "java" in role_lower:
+        return (
+            "1. What is the difference between JDK, JRE, and JVM?\n"
+            "2. What is method overloading and method overriding in Java?\n"
+            "3. What is the difference between ArrayList and LinkedList?\n"
+            "4. Explain exception handling in Java.\n"
+            "5. What are the main OOP concepts in Java?"
+        )
+
+    if "flutter" in role_lower:
+        return (
+            "1. What is the difference between StatelessWidget and StatefulWidget?\n"
+            "2. What is BuildContext in Flutter?\n"
+            "3. How does setState work in Flutter?\n"
+            "4. What is the difference between hot reload and hot restart?\n"
+            "5. What is pubspec.yaml used for?"
+        )
+
+    return (
+        "1. Tell me about your role and responsibilities.\n"
+        "2. What are the main skills required for this role?\n"
+        "3. Describe a project you worked on.\n"
+        "4. What challenges have you faced in your work?\n"
+        "5. How do you solve problems in your field?"
+    )
+
+
 @app.post("/generate-questions")
 async def generate_questions(data: QuestionRequest):
     try:
+        if not API_KEY:
+            return {"questions": fallback_role_questions(data.role)}
+
         prompt = f"""
-Generate 10 interview questions for a {data.role} candidate.
+Generate exactly 5 interview questions for the role: {data.role}
 
 Difficulty level: {data.level}
 
 Rules:
-- If level is easy, ask beginner-friendly and simple questions.
-- If level is medium, ask practical and moderate-level questions.
-- If level is hard, ask advanced and challenging questions.
-- Return only a numbered list.
+- Questions must be strictly related to {data.role}
+- Do not ask generic HR questions like "Tell me about yourself"
+- Do not ask repeated questions
+- Questions must match {data.level} difficulty
+- Keep questions short, clear, and professional
+- Return only a numbered list from 1 to 5
 """
 
         response = requests.post(
@@ -55,33 +102,39 @@ Rules:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "openrouter/free",
+                "model": "openrouter/auto",
                 "messages": [
+                    {
+                        "role": "system",
+                        "content": "You are an expert technical interviewer."
+                    },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
             },
-            timeout=30,
+            timeout=10,
         )
 
         result = response.json()
+        print("QUESTION RESPONSE:", result)
 
         if "choices" not in result:
-            return {
-                "questions": "1. Tell me about yourself\n2. Why are you interested in this role?\n3. Describe a project you worked on\n4. What are your strengths?\n5. How do you solve problems?\n6. What tools do you use?\n7. What challenges have you faced?\n8. How do you debug issues?\n9. What have you learned recently?\n10. Why should we hire you?"
-            }
+            return {"questions": fallback_role_questions(data.role)}
 
-        return {
-            "questions": result["choices"][0]["message"]["content"]
-        }
+        content = result["choices"][0]["message"]["content"].strip()
+
+        if not content:
+            return {"questions": fallback_role_questions(data.role)}
+
+        return {"questions": content}
 
     except Exception as e:
-        return {"error": str(e)}
+        print("QUESTION ERROR:", e)
+        return {"questions": fallback_role_questions(data.role)}
 
 
-# 🔥 FINAL EVALUATION (FULL INTERVIEW SCORECARD)
 @app.post("/evaluate")
 async def evaluate(data: EvaluateRequest):
     try:
@@ -94,9 +147,7 @@ async def evaluate(data: EvaluateRequest):
         total = len(data.questions)
 
         if total == 0:
-            return {
-                "result": "Attempted: 0/0\n\nScore: 0/10\n\nOverall Feedback:\nNo interview questions were available.\n\nStrengths:\n- None\n\nImprovements:\n- Try again with valid interview questions."
-            }
+            return {"result": "No questions available."}
 
         if attempt_count == 0:
             return {
@@ -108,12 +159,12 @@ Overall Feedback:
 The candidate did not attempt any interview questions, so performance could not be evaluated.
 
 Strengths:
-- Interview session was started successfully.
+- Interview session started successfully.
 
 Improvements:
 - Attempt the questions instead of leaving them blank.
 - Speak clearly and answer in complete sentences.
-- Try to give practical examples from projects or learning.
+- Give practical examples where possible.
 
 Final Verdict:
 Needs improvement before a proper assessment can be made."""
@@ -123,6 +174,30 @@ Needs improvement before a proper assessment can be made."""
             f"Question: {q}\nAnswer: {a}" for q, a in attempted
         ])
 
+        if not API_KEY:
+            fallback_score = round((attempt_count / total) * 10, 1)
+            return {
+                "result": f"""Attempted: {attempt_count}/{total}
+
+Score: {fallback_score}/10
+
+Overall Feedback:
+The interview was partially evaluated using fallback logic because AI evaluation is unavailable.
+
+Strengths:
+- Attempted multiple questions.
+- Participated in the interview flow.
+- Showed willingness to answer.
+
+Improvements:
+- Give more complete and confident answers.
+- Add practical examples from projects or experience.
+- Improve clarity and structure.
+
+Final Verdict:
+Decent attempt, but needs stronger responses."""
+            }
+
         prompt = f"""
 You are a professional interview evaluator.
 
@@ -130,15 +205,15 @@ A candidate attempted {attempt_count} out of {total} questions.
 
 Evaluate the interview based only on the attempted answers.
 
-You must judge:
+Judge:
 - Communication skills
 - Confidence
 - Clarity
 - Technical relevance
 - Practical understanding
-- Whether the answers feel genuine or weak
+- Whether answers are genuine, weak, or strong
 
-Give the response in EXACTLY this format:
+Give the response in exactly this format:
 
 Attempted: {attempt_count}/{total}
 
@@ -172,49 +247,39 @@ Here are the attempted answers:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "openrouter/free",
+                "model": "openrouter/auto",
                 "messages": [
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": "You are a strict but fair interview evaluator."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
                 ],
             },
-            timeout=40,
+            timeout=12,
         )
 
         result = response.json()
+        print("EVALUATE RESPONSE:", result)
 
         if "choices" not in result:
-            fallback_score = round((attempt_count / total) * 10, 1)
-            return {
-                "result": f"""Attempted: {attempt_count}/{total}
+            raise Exception("Invalid API response")
 
-Score: {fallback_score}/10
+        content = result["choices"][0]["message"]["content"].strip()
 
-Overall Feedback:
-The interview was partially completed. The candidate attempted some questions, but AI evaluation could not be generated fully.
+        if not content:
+            raise Exception("Empty evaluation content")
 
-Strengths:
-- Attempted multiple questions.
-- Participated in the interview flow.
-- Showed willingness to answer.
-
-Improvements:
-- Give more complete and confident answers.
-- Add practical examples from projects or experience.
-- Improve consistency across all questions.
-
-Final Verdict:
-Decent attempt, but needs stronger responses."""
-            }
-
-        return {
-            "result": result["choices"][0]["message"]["content"]
-        }
+        return {"result": content}
 
     except Exception as e:
+        print("EVALUATION ERROR:", e)
+
         fallback_total = len(data.questions)
-        fallback_attempted = len([
-            a for a in data.answers if a.strip() != ""
-        ])
+        fallback_attempted = len([a for a in data.answers if a.strip() != ""])
         fallback_score = round((fallback_attempted / fallback_total) * 10, 1) if fallback_total > 0 else 0
 
         return {
@@ -228,7 +293,7 @@ There was an error while generating the detailed AI evaluation, but the intervie
 Strengths:
 - The interview was completed.
 - Answers were submitted for evaluation.
-- The system captured participation correctly.
+- Participation was captured correctly.
 
 Improvements:
 - Try again for a full AI-generated review.
@@ -236,7 +301,5 @@ Improvements:
 - Speak with more clarity and confidence.
 
 Final Verdict:
-Interview completed, but detailed evaluation failed due to a system error.
-
-Error: {str(e)}"""
+Interview completed, but detailed evaluation used fallback logic."""
         }
