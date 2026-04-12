@@ -11,12 +11,7 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 app = FastAPI()
 
-# ✅ ROOT ROUTE
-@app.get("/")
-def home():
-    return {"message": "Backend running ✅"}
-
-# ✅ CORS
+# ✅ CORS FIX
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,17 +32,21 @@ class EvaluateRequest(BaseModel):
     answers: list[str]
 
 
-# 🔥 GENERATE QUESTIONS
+# 🔥 Generate Questions
 @app.post("/generate-questions")
 async def generate_questions(data: QuestionRequest):
     try:
-        # ✅ fallback if API key missing
-        if not API_KEY:
-            return {
-                "questions": "1. Tell me about yourself\n2. Why do you want this job?\n3. What are your strengths?\n4. Describe a project\n5. How do you solve problems?"
-            }
+        prompt = f"""
+Generate 10 interview questions for a {data.role} candidate.
 
-        prompt = f"Generate 5 interview questions for a {data.role} ({data.level}) candidate."
+Difficulty level: {data.level}
+
+Rules:
+- If level is easy, ask beginner-friendly and simple questions.
+- If level is medium, ask practical and moderate-level questions.
+- If level is hard, ask advanced and challenging questions.
+- Return only a numbered list.
+"""
 
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -56,34 +55,33 @@ async def generate_questions(data: QuestionRequest):
                 "Content-Type": "application/json",
             },
             json={
-                "model": "openrouter/auto",
+                "model": "openrouter/free",
                 "messages": [
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
                 ],
             },
-            timeout=10,  # 🔥 fast timeout
+            timeout=30,
         )
 
         result = response.json()
-        print("QUESTION RESPONSE:", result)
 
         if "choices" not in result:
-            raise Exception("Invalid API response")
+            return {
+                "questions": "1. Tell me about yourself\n2. Why are you interested in this role?\n3. Describe a project you worked on\n4. What are your strengths?\n5. How do you solve problems?\n6. What tools do you use?\n7. What challenges have you faced?\n8. How do you debug issues?\n9. What have you learned recently?\n10. Why should we hire you?"
+            }
 
         return {
             "questions": result["choices"][0]["message"]["content"]
         }
 
     except Exception as e:
-        print("ERROR:", e)
-
-        # 🔥 always return fallback (never hang)
-        return {
-            "questions": "1. Tell me about yourself\n2. Why do you want this job?\n3. What are your strengths?\n4. Describe a project\n5. How do you solve problems?"
-        }
+        return {"error": str(e)}
 
 
-# 🔥 EVALUATE ANSWERS
+# 🔥 FINAL EVALUATION (FULL INTERVIEW SCORECARD)
 @app.post("/evaluate")
 async def evaluate(data: EvaluateRequest):
     try:
@@ -96,31 +94,75 @@ async def evaluate(data: EvaluateRequest):
         total = len(data.questions)
 
         if total == 0:
-            return {"result": "No questions available."}
+            return {
+                "result": "Attempted: 0/0\n\nScore: 0/10\n\nOverall Feedback:\nNo interview questions were available.\n\nStrengths:\n- None\n\nImprovements:\n- Try again with valid interview questions."
+            }
 
         if attempt_count == 0:
-            return {"result": "You did not attempt any questions."}
+            return {
+                "result": f"""Attempted: 0/{total}
+
+Score: 0/10
+
+Overall Feedback:
+The candidate did not attempt any interview questions, so performance could not be evaluated.
+
+Strengths:
+- Interview session was started successfully.
+
+Improvements:
+- Attempt the questions instead of leaving them blank.
+- Speak clearly and answer in complete sentences.
+- Try to give practical examples from projects or learning.
+
+Final Verdict:
+Needs improvement before a proper assessment can be made."""
+            }
 
         qa_text = "\n\n".join([
             f"Question: {q}\nAnswer: {a}" for q, a in attempted
         ])
 
-        # ✅ fallback if API key missing
-        if not API_KEY:
-            return {
-                "result": f"Attempted: {attempt_count}/{total}\nScore: 5/10\nFeedback: Improve answers."
-            }
-
         prompt = f"""
-Evaluate this interview:
+You are a professional interview evaluator.
+
+A candidate attempted {attempt_count} out of {total} questions.
+
+Evaluate the interview based only on the attempted answers.
+
+You must judge:
+- Communication skills
+- Confidence
+- Clarity
+- Technical relevance
+- Practical understanding
+- Whether the answers feel genuine or weak
+
+Give the response in EXACTLY this format:
+
+Attempted: {attempt_count}/{total}
+
+Score: <number out of 10>
+
+Overall Feedback:
+<short paragraph>
+
+Strengths:
+- <point 1>
+- <point 2>
+- <point 3>
+
+Improvements:
+- <point 1>
+- <point 2>
+- <point 3>
+
+Final Verdict:
+<one short line>
+
+Here are the attempted answers:
 
 {qa_text}
-
-Give:
-- Score out of 10
-- Feedback
-- Strengths
-- Improvements
 """
 
         response = requests.post(
@@ -130,28 +172,71 @@ Give:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "openrouter/auto",
+                "model": "openrouter/free",
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
             },
-            timeout=12,
+            timeout=40,
         )
 
         result = response.json()
-        print("EVAL RESPONSE:", result)
 
         if "choices" not in result:
-            raise Exception("Invalid API response")
+            fallback_score = round((attempt_count / total) * 10, 1)
+            return {
+                "result": f"""Attempted: {attempt_count}/{total}
+
+Score: {fallback_score}/10
+
+Overall Feedback:
+The interview was partially completed. The candidate attempted some questions, but AI evaluation could not be generated fully.
+
+Strengths:
+- Attempted multiple questions.
+- Participated in the interview flow.
+- Showed willingness to answer.
+
+Improvements:
+- Give more complete and confident answers.
+- Add practical examples from projects or experience.
+- Improve consistency across all questions.
+
+Final Verdict:
+Decent attempt, but needs stronger responses."""
+            }
 
         return {
             "result": result["choices"][0]["message"]["content"]
         }
 
     except Exception as e:
-        print("ERROR:", e)
+        fallback_total = len(data.questions)
+        fallback_attempted = len([
+            a for a in data.answers if a.strip() != ""
+        ])
+        fallback_score = round((fallback_attempted / fallback_total) * 10, 1) if fallback_total > 0 else 0
 
-        # 🔥 fallback (never hang)
         return {
-            "result": f"Attempted: {len(data.answers)}/{len(data.questions)}\nScore: 5/10\nBasic feedback generated."
+            "result": f"""Attempted: {fallback_attempted}/{fallback_total}
+
+Score: {fallback_score}/10
+
+Overall Feedback:
+There was an error while generating the detailed AI evaluation, but the interview attempt was recorded.
+
+Strengths:
+- The interview was completed.
+- Answers were submitted for evaluation.
+- The system captured participation correctly.
+
+Improvements:
+- Try again for a full AI-generated review.
+- Answer more questions completely.
+- Speak with more clarity and confidence.
+
+Final Verdict:
+Interview completed, but detailed evaluation failed due to a system error.
+
+Error: {str(e)}"""
         }
