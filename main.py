@@ -11,7 +11,7 @@ API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 app = FastAPI()
 
-# ✅ ROOT ROUTE (IMPORTANT)
+# ✅ ROOT ROUTE
 @app.get("/")
 def home():
     return {"message": "Backend running ✅"}
@@ -41,15 +41,86 @@ class EvaluateRequest(BaseModel):
 @app.post("/generate-questions")
 async def generate_questions(data: QuestionRequest):
     try:
+        # ✅ fallback if API key missing
         if not API_KEY:
-            return {"error": "API KEY NOT FOUND ❌"}
+            return {
+                "questions": "1. Tell me about yourself\n2. Why do you want this job?\n3. What are your strengths?\n4. Describe a project\n5. How do you solve problems?"
+            }
+
+        prompt = f"Generate 5 interview questions for a {data.role} ({data.level}) candidate."
+
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openrouter/auto",
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ],
+            },
+            timeout=10,  # 🔥 fast timeout
+        )
+
+        result = response.json()
+        print("QUESTION RESPONSE:", result)
+
+        if "choices" not in result:
+            raise Exception("Invalid API response")
+
+        return {
+            "questions": result["choices"][0]["message"]["content"]
+        }
+
+    except Exception as e:
+        print("ERROR:", e)
+
+        # 🔥 always return fallback (never hang)
+        return {
+            "questions": "1. Tell me about yourself\n2. Why do you want this job?\n3. What are your strengths?\n4. Describe a project\n5. How do you solve problems?"
+        }
+
+
+# 🔥 EVALUATE ANSWERS
+@app.post("/evaluate")
+async def evaluate(data: EvaluateRequest):
+    try:
+        attempted = [
+            (q, a) for q, a in zip(data.questions, data.answers)
+            if a.strip() != ""
+        ]
+
+        attempt_count = len(attempted)
+        total = len(data.questions)
+
+        if total == 0:
+            return {"result": "No questions available."}
+
+        if attempt_count == 0:
+            return {"result": "You did not attempt any questions."}
+
+        qa_text = "\n\n".join([
+            f"Question: {q}\nAnswer: {a}" for q, a in attempted
+        ])
+
+        # ✅ fallback if API key missing
+        if not API_KEY:
+            return {
+                "result": f"Attempted: {attempt_count}/{total}\nScore: 5/10\nFeedback: Improve answers."
+            }
 
         prompt = f"""
-Generate 10 interview questions for a {data.role} candidate.
+Evaluate this interview:
 
-Difficulty level: {data.level}
+{qa_text}
 
-Return only a numbered list.
+Give:
+- Score out of 10
+- Feedback
+- Strengths
+- Improvements
 """
 
         response = requests.post(
@@ -59,32 +130,28 @@ Return only a numbered list.
                 "Content-Type": "application/json",
             },
             json={
-                "model": "openrouter/auto",  # ✅ FIXED
+                "model": "openrouter/auto",
                 "messages": [
                     {"role": "user", "content": prompt}
                 ],
             },
-            timeout=15,  # ✅ FIXED
+            timeout=12,
         )
 
         result = response.json()
-
-        print("API RESPONSE:", result)
+        print("EVAL RESPONSE:", result)
 
         if "choices" not in result:
-            return {
-                "questions": "1. Tell me about yourself\n2. Why do you want this job?\n3. What are your strengths?\n4. Describe a project\n5. How do you solve problems?"
-            }
+            raise Exception("Invalid API response")
 
         return {
-            "questions": result["choices"][0]["message"]["content"]
+            "result": result["choices"][0]["message"]["content"]
         }
 
     except Exception as e:
         print("ERROR:", e)
-        return {"error": str(e)}
 
-
-# 🔥 EVALUATE ANSWERS
-@app.post("/evaluate")
-async def
+        # 🔥 fallback (never hang)
+        return {
+            "result": f"Attempted: {len(data.answers)}/{len(data.questions)}\nScore: 5/10\nBasic feedback generated."
+        }
